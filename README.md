@@ -19,11 +19,13 @@ Python version:
 - Make sure at least one Python command works first: `python3 --version` or `python --version`.
 
 ## manual download
+```     
 Twitter15/16:
 https://www.dropbox.com/s/7ewzdrbelpmrnxu/rumdetect2017.zip?dl=1
 GoEmotions:
 https://www.kaggle.com/datasets/debarshichanda/goemotions
 ## References
+```
 ```
 [1] X. Liu, A. Nourbakhsh, Q. Li, R. Fang, and S. Shah. Real-time Rumor Debunking on Twitter.
 Proceedings of the 24th ACM International Conference on Information and Knowledge
