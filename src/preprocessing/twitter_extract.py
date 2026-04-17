@@ -1,8 +1,11 @@
 import json
 import random
+from pathlib import Path
 
-PATH_TWITTER15 = "data/rumor_detection_acl2017/twitter15"
-PATH_TWITTER16 = "data/rumor_detection_acl2017/twitter16"
+ROOT = Path(__file__).resolve().parents[2]
+
+PATH_TWITTER15 = ROOT / "data/rumor_detection_acl2017/twitter15"
+PATH_TWITTER16 = ROOT / "data/rumor_detection_acl2017/twitter16"
 random.seed(256)
 
 # get the tree for a given id and path

@@ -2,7 +2,7 @@
 
 COMP4415 group project: **train an emotion model on GoEmotions**, apply it to **Twitter15/16 source tweets**, and predict **true vs false rumors** using **emotional features**—plus a **text baseline** on the same splits to show whether emotion adds signal beyond generic wording.
 
-## Run setup.sh (recommended)
+## To run setup.sh:
 
 Make sure to install pip and python 3.12> first.
 
@@ -18,6 +18,11 @@ Python version:
 - The script automatically uses `python3` if available, otherwise it falls back to `python`.
 - Make sure at least one Python command works first: `python3 --version` or `python --version`.
 
+## manual download
+Twitter15/16:
+https://www.dropbox.com/s/7ewzdrbelpmrnxu/rumdetect2017.zip?dl=1
+GoEmotions:
+https://www.kaggle.com/datasets/debarshichanda/goemotions
 ## References
 ```
 [1] X. Liu, A. Nourbakhsh, Q. Li, R. Fang, and S. Shah. Real-time Rumor Debunking on Twitter.
