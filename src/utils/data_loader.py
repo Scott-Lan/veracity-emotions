@@ -7,7 +7,6 @@
 import json
 from pathlib import Path
 
-#lazy way to get the root directory but it works
 ROOT = Path(__file__).resolve().parents[2]
 
 PATH_TWITTER15 = ROOT / "data/rumor_detection_acl2017/twitter15"
@@ -39,6 +38,7 @@ def load_split_combined(split_name):
         label.append(row["label"])
     return (text, label)
 
+#the same as load_split(), but with trees.
 def load_split_with_trees(split_name):
     #load the data with the trees
     text = []
