@@ -1,12 +1,17 @@
+#PURPOSE: extract twitter15 and twitter16 data from the original dataset files and write to json files
+#INPUT: none
+#OUTPUT: json files for train, val, and test data
+#NOTES: 
+# import build_data() from twitter_extract.py 
+# build_data() function call builds the data and writes to json files
+
 import json
-import random
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
 PATH_TWITTER15 = ROOT / "data/rumor_detection_acl2017/twitter15"
 PATH_TWITTER16 = ROOT / "data/rumor_detection_acl2017/twitter16"
-random.seed(256)
 
 # get the tree for a given id and path
 #get_tree(80080680482123777, "twitter15") -> 80080680482123777.txt tree
@@ -44,23 +49,42 @@ def clean_tweet(text):
             words.append(word)
     return " ".join(words)
 
-def write_split(data, out_dir, year, train, val, test):
-    #slice data from pairs
-    train_data = data[train[0] : train[1]]
-    val_data = data[val[0] : val[1]]
-    test_data = data[test[0] : test[1]]
+#need to seperate the data by type and by time (relative).
+def temporal_split(data, train_frac=0.8, val_frac=0.1):
+    # stratified temporal split: within each label, oldest train_frac -> train,
+    # next val_frac -> val, remainder -> test
+    labels = ["true", "false", "non-rumor", "unverified"]
+    train, val, test = [], [], []
 
-    #write to file for train, val, and test
-    with open(f"{out_dir}/train_{year}.json", "w") as f:
-        json.dump(train_data, f, indent=2, ensure_ascii=False)
-    with open(f"{out_dir}/val_{year}.json", "w") as f:
-        json.dump(val_data, f, indent=2, ensure_ascii=False)
-    with open(f"{out_dir}/test_{year}.json", "w") as f:
-        json.dump(test_data, f, indent=2, ensure_ascii=False)
+    for label in labels:
+        #list of matching rows for this label
+        match = [row for row in data if row["label"] == label]
+        #sort by id (chronologically)
+        match.sort(key=lambda r: int(r["id"]))
+        #split by time by calculating cutoffs
+        n = len(match)
+        cut_train = int(train_frac * n)
+        cut_val = cut_train + int(val_frac * n)
+        
+        #add to split arrays
+        train.extend(match[:cut_train])
+        val.extend(match[cut_train:cut_val])
+        test.extend(match[cut_val:])
+
+    return train, val, test
+
+def write_split(output_dir, year, train, val, test):
+    for split, split_file in [(train, "train"), (val, "val"), (test, "test")]:
+                with open(f"{output_dir}/{split_file}_{year}.json", "w") as f:
+                    json.dump(split, f, indent=2, ensure_ascii=False)
+
 
 def build_data():
     data_15 = []
     data_16 = []
+    output_dir = ROOT / "data/text_data"
+    # create output directory if it doesn't exist
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     #pull data from dataset files
     with open(f"{PATH_TWITTER15}/label.txt", "r") as f:
@@ -76,24 +100,12 @@ def build_data():
             #tree = get_tree(tweet_id, PATH_TWITTER16)
             data_16.append({"id": tweet_id, "label": label, "text": text})
 
-    # 80/10/10 split after both lists are built (not inside the twitter16 file read)
-    for data, out_dir, year in [(data_15, PATH_TWITTER15, "15"), (data_16, PATH_TWITTER16, "16")]:
-        random.shuffle(data)
-        #calc lengths of train, val, and test
-        n = len(data)
-        n_train = int(0.8 * n)
-        n_val = int(0.1 * n)
-        #store ranges as pairs
-        i_train = [0, n_train]
-        i_val = [n_train, n_train + n_val]
-        i_test = [n_train + n_val, n]
-        #send to write function
-        write_split(data, out_dir, year, i_train, i_val, i_test)
+    # stratified temporal 80/10/10 split per year
+    for data, year in [(data_15, "15"), (data_16, "16")]:
+        train, val, test = temporal_split(data)
+        write_split(output_dir, year, train, val, test)
 
 
-def main():
-    build_data()
-    
 
 if __name__ == "__main__":
-    main()
+    build_data()

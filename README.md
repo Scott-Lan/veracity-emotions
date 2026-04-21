@@ -18,6 +18,13 @@ Python version:
 - The script automatically uses `python3` if available, otherwise it falls back to `python`.
 - Make sure at least one Python command works first: `python3 --version` or `python --version`.
 
+## To run text model:
+```
+python(3) {PROJECT_ROOT}/src/text_model.py
+```
+
+will extract data and create json files if needed.
+
 ## manual download
 ```     
 Twitter15/16:
