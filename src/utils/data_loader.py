@@ -38,26 +38,6 @@ def load_split_combined(split_name):
         label.append(row["label"])
     return (text, label)
 
-#the same as load_split(), but with trees.
-def load_split_with_trees(split_name):
-    #load the data with the trees
-    text = []
-    label = []
-    id = []
-    tree = []
-    for path_dir, year in [(PATH_TWITTER15, "15"), (PATH_TWITTER16, "16")]:
-        json_path = f"{path_dir}/{split_name}_{year}.json"
-        with open(json_path, encoding="utf-8") as f:
-            data = json.load(f)
-        for row in data:
-            text.append(row["text"])
-            label.append(row["label"])
-            id.append(row["id"])
-            tree.append(get_tree(id, path_dir))
-        
- 
-    return (text, label, tree)
-
 #fetch tree data based on id
 def get_tree(id, path_dir):
     tree_path = f"{path_dir}/tree/{id}.txt"
