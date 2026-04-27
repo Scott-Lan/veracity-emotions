@@ -54,19 +54,22 @@ class RumorGNN(nn.Module):
             nn.Linear(hidden, num_classes),
         )
 
-    def forward(self, x, edge_index, bot_up_edge_index, root_feat, batch):
-        #broadcast root features to every node in the batch for layer 2 injection
-        rf = root_feat[batch]
+    def forward(self, x, edge_index, bot_up_edge_index, root_feat, text_feat, batch):
+        #broadcast per-tree text features to every node and form full per-node features.
+        #text is stored once per tree to avoid the per-node duplication that blew up RAM.
+        tf = text_feat[batch]                          # (N, TFIDF_DIM)
+        x_full = torch.cat([x, tf], dim=1)             # (N, STRUCT+EMOTION+TFIDF)
+        rf = torch.cat([root_feat[batch], tf], dim=1)  # (N, STRUCT+EMOTION+TFIDF)
 
         #top-down stream
         #relu after each conv, dropout after layer 1, inject root features before layer 2
-        x_top_down = F.relu(self.top_down_conv1(x, edge_index))
+        x_top_down = F.relu(self.top_down_conv1(x_full, edge_index))
         x_top_down = F.dropout(x_top_down, p=self.dropout, training=self.training)
         x_top_down = F.relu(self.top_down_conv2(torch.cat([x_top_down, rf], dim=1), edge_index))
 
         #bottom-up stream
-        
-        x_bot_up = F.relu(self.bot_up_conv1(x, bot_up_edge_index))
+
+        x_bot_up = F.relu(self.bot_up_conv1(x_full, bot_up_edge_index))
         x_bot_up = F.dropout(x_bot_up, p=self.dropout, training=self.training)
         x_bot_up = F.relu(self.bot_up_conv2(torch.cat([x_bot_up, rf], dim=1), bot_up_edge_index))
 
@@ -83,10 +86,8 @@ def compile_data(tweet_id, label, path_dir, text_vec=None, emotion_vec=None):
     root = parse_tree(tweet_id, path_dir)
     nodes = annotate_tree(root)
 
-    # broadcast root-tweet text features to every node (paper-style per-node text);
-    # emotion remains a single root-level vector for now
-    for node in nodes:
-        node.text_vec = text_vec
+    # emotion remains a single root-level vector for now;
+    # text is stored once per tree (see text_feat below) and broadcast at forward time
     nodes[0].emotion_vec = emotion_vec
 
     # get max values for normalization of features
@@ -94,26 +95,23 @@ def compile_data(tweet_id, label, path_dir, text_vec=None, emotion_vec=None):
     max_time = max(n.time for n in nodes)
     max_fanout = max(n.num_children for n in nodes)
 
-    #to fill in any empty text and/or emotion vectors with zeros so we can batch them
-    zeros_text = torch.zeros(TFIDF_DIM)
     zeros_emotion = torch.zeros(EMOTION_DIM)
 
+    # per-node compact features: struct + emotion only (no text)
     rows = []
     for node in nodes:
         struct = torch.tensor(node.feature_vector(max_depth, max_time, max_fanout))
-        #use text_vec and emotion_vec if they exist, else fill with zeros
-        if node.text_vec is not None:
-            text = node.text_vec
-        else: text = zeros_text
-        if node.emotion_vec is not None:
+        # if text_vec is not None:
+        #     text = text_vec
+        # else:
+        #     text = torch.zeros(TFIDF_DIM)
+        if emotion_vec is not None:
             emotion = node.emotion_vec
-        else: emotion = zeros_emotion
-        
-        #concatenate structure, text and emotion fetures into one vector
-        rows.append(torch.cat([struct, text, emotion]))
-        
-    #stack into one big tensor for the whole graph
-    x = torch.stack(rows)
+        else:
+            emotion = zeros_emotion
+            
+        rows.append(torch.cat([struct, emotion]))
+    x = torch.stack(rows)  # (N, STRUCT_DIM + EMOTION_DIM)
 
     #top-down (top_down) edges (parent->child) and bottom-up (bot_up) edges (child->parent)
     index_of = {n: i for i, n in enumerate(nodes)}
@@ -127,12 +125,17 @@ def compile_data(tweet_id, label, path_dir, text_vec=None, emotion_vec=None):
     top_down_edge_index = torch.tensor(top_down_edges, dtype=torch.long).t().contiguous()
     bot_up_edge_index = torch.tensor(bot_up_edges, dtype=torch.long).t().contiguous()
 
-    #save root features separately so the model can inject them at layer 2
-    root_feat = x[0].unsqueeze(0)
+    # one TF-IDF row per tree; broadcast to every node inside RumorGNN.forward
+    if text_vec is None:
+        text_vec = torch.zeros(TFIDF_DIM)
+    text_feat = text_vec.unsqueeze(0)  # (1, TFIDF_DIM)
+
+    # root's compact (struct+emotion) features; text comes via text_feat at forward time
+    root_feat = x[0].unsqueeze(0)  # (1, STRUCT_DIM + EMOTION_DIM)
 
     y = torch.tensor(LABELS[label], dtype=torch.long)
     return Data(x=x, top_down_edge_index=top_down_edge_index, bot_up_edge_index=bot_up_edge_index,
-                root_feat=root_feat, y=y)
+                root_feat=root_feat, text_feat=text_feat, y=y)
 
 
 # load a split of the data and return a list of Data objects
@@ -162,7 +165,7 @@ def train_epoch(model, loader, optimizer, device):
         batch = batch.to(device)
         optimizer.zero_grad()
         #features and edges return logits which we compare to labels
-        logits = model(batch.x, batch.top_down_edge_index, batch.bot_up_edge_index, batch.root_feat, batch.batch)
+        logits = model(batch.x, batch.top_down_edge_index, batch.bot_up_edge_index, batch.root_feat, batch.text_feat, batch.batch)
         #y = labels
         loss = F.cross_entropy(logits, batch.y)
         loss.backward()
@@ -180,7 +183,7 @@ def evaluate(model, loader, device):
     #iterate over all batches in the loader and evaluate
     for batch in loader:
         batch = batch.to(device)
-        preds = model(batch.x, batch.top_down_edge_index, batch.bot_up_edge_index, batch.root_feat, batch.batch).argmax(dim=1)
+        preds = model(batch.x, batch.top_down_edge_index, batch.bot_up_edge_index, batch.root_feat, batch.text_feat, batch.batch).argmax(dim=1)
         all_preds.extend(preds.cpu().tolist())
         all_labels.extend(batch.y.cpu().tolist())
     acc = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels)
@@ -236,6 +239,7 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
     #schedular to prevent overfitting.
         # if f1 doesnt improve for 7 epochs, reduce lr by factor of 0.5
+        # PRIMARY WAY TO PREVENT OVERFITTING
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", patience=7, factor=0.5
     )
