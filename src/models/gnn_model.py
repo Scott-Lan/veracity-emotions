@@ -12,13 +12,13 @@ import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv, global_mean_pool
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import f1_score, classification_report #goat
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from utils.tree_parser import parse_tree, annotate_tree
+from utils.data_loader import TFIDF_DIM
 import utils.data_loader as dl
 
 LABELS = {"false": 0, "non-rumor": 1, "true": 2, "unverified": 3}
@@ -27,7 +27,6 @@ PATH_16 = ROOT / "data/rumor_detection_acl2017/twitter16"
 TEXT_DATA = ROOT / "data/text_data"
 
 # feature dimensions for one node
-TFIDF_DIM = 5000
 STRUCT_DIM = 10
 EMOTION_DIM = 6
 # paper-style per-node text features: TF-IDF of source tweet broadcast to every node
@@ -128,9 +127,9 @@ def compile_data(tweet_id, label, path_dir, text_vec=None, emotion_vec=None):
     # one TF-IDF row per tree; broadcast to every node inside RumorGNN.forward
     if text_vec is None:
         text_vec = torch.zeros(TFIDF_DIM)
-    text_feat = text_vec.unsqueeze(0)  # (1, TFIDF_DIM)
+    text_feat = text_vec.unsqueeze(0)
 
-    # root's compact (struct+emotion) features; text comes via text_feat at forward time
+    # root's(struct+emotion) features; text comes via text_feat at forward time
     root_feat = x[0].unsqueeze(0)  # (1, STRUCT_DIM + EMOTION_DIM)
 
     y = torch.tensor(LABELS[label], dtype=torch.long)
@@ -140,20 +139,27 @@ def compile_data(tweet_id, label, path_dir, text_vec=None, emotion_vec=None):
 
 # load a split of the data and return a list of Data objects
 #   split_name : "train", "val", or "test"
-def load_data_from_split(split_name):
-    cache_path = ROOT / f"data/cache_{split_name}_tfidf.pt"
+#   use_text   : include TF-IDF source-tweet features
+#   use_emotion: include NRC emotion features
+def load_data_list(split_name, use_text=True, use_emotion=True):
+    config = (("t" if use_text else "") + ("e" if use_emotion else "")) or "struct"
+    cache_path = ROOT / f"data/cache_{split_name}_{config}.pt"
     if cache_path.exists():
         return torch.load(cache_path, weights_only=False)
-    tfidf = tfidf_features()
+    tfidf = dl.tfidf_features() if use_text else None
+    #emotion = emotion_features() if use_emotion else None
+    emotion = None # comment out when emotion classifier is available
     data_list = []
     for path_dir, year in [(PATH_15, "15"), (PATH_16, "16")]:
         json_path = TEXT_DATA / f"{split_name}_{year}.json"
         with open(json_path, encoding="utf-8") as f:
             rows = json.load(f)
         for row in rows:
-            data_list.append(
-                compile_data(row["id"], row["label"], path_dir, text_vec=tfidf[row["id"]])
-            )
+            data_list.append(compile_data(
+                row["id"], row["label"], path_dir,
+                text_vec=tfidf[row["id"]] if tfidf else None,
+                emotion_vec=emotion[row["id"]] if emotion else None,
+            ))
     torch.save(data_list, cache_path)
     return data_list
     
@@ -190,32 +196,6 @@ def evaluate(model, loader, device):
     f1  = f1_score(all_labels, all_preds, average="macro")
     return acc, f1, all_preds, all_labels
 
-def tfidf_features():
-    features = {}
-    train_rows = dl.load_split_rows("train")
-    val_rows = dl.load_split_rows("val")
-    test_rows = dl.load_split_rows("test")
-    
-    vectorizer = TfidfVectorizer(max_features=5000, sublinear_tf=True, stop_words="english", min_df=2)
-    
-    #fit on train ONLY
-    #
-    vectorizer.fit([r["text"] for r in train_rows])
-    
-    for rows in (train_rows, val_rows, test_rows):
-        ids = [r["id"] for r in rows]
-        mat = vectorizer.transform([r["text"] for r in rows]).toarray()
-        #
-        tensor = torch.from_numpy(mat).float()
-        if tensor.shape[1] < TFIDF_DIM:
-            pad = torch.zeros(tensor.shape[0], TFIDF_DIM - tensor.shape[1])
-            tensor = torch.cat([tensor, pad], dim=1)
-        for tid, vec in zip(ids, tensor):
-            features[tid] = vec.contiguous()
-            
-    torch.save(features, ROOT / "data/tfidf_features.pt")
-    return features
-
 def main():
     # use GPU if available, else CPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -223,9 +203,9 @@ def main():
 
     # load all three splits as lists of Data objects
     print("loading splits...")
-    train_data = load_data_from_split("train")
-    val_data = load_data_from_split("val")
-    test_data = load_data_from_split("test")
+    train_data = load_data_list("train")
+    val_data = load_data_list("val")
+    test_data = load_data_list("test")
     print(f"  train={len(train_data)}, val={len(val_data)}, test={len(test_data)}")
 
     #dataLoader makes graphs into one disjoint mega-graph
