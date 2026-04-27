@@ -194,62 +194,71 @@ def evaluate(model, loader, device):
     f1  = f1_score(all_labels, all_preds, average="macro")
     return acc, f1, all_preds, all_labels
 
-def main():
-    # use GPU if available, else CPU
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"device: {device}")
+#run a full train/val/test cycle for one ablation config, print classification reports
+def run_config(use_text, use_emotion, device):
+    label_names = sorted(LABELS, key=LABELS.get)
+    #build config string for display and cache naming
+    config = (("t" if use_text else "") + ("e" if use_emotion else "")) or "struct"
+    print(f"\n{'='*55}")
+    print(f"  CONFIG: {config}")
+    print(f"{'='*55}")
 
-    # load all three splits as lists of Data objects
-    print("loading splits...")
-    train_data = load_data_list("train")
-    val_data = load_data_list("val")
-    test_data = load_data_list("test")
+    #load splits for this config
+    train_data = load_data_list("train", use_text, use_emotion)
+    val_data   = load_data_list("val",   use_text, use_emotion)
+    test_data  = load_data_list("test",  use_text, use_emotion)
     print(f"  train={len(train_data)}, val={len(val_data)}, test={len(test_data)}")
 
     #dataLoader makes graphs into one disjoint mega-graph
     train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_data,   batch_size=64)
-    test_loader = DataLoader(test_data,  batch_size=64)
+    val_loader   = DataLoader(val_data,   batch_size=64)
+    test_loader  = DataLoader(test_data,  batch_size=64)
 
-    # init model, optimizer, and scheduler
-    model = RumorGNN(dropout=0.5).to(device)
-    #optimizer with L2 weight decay for regularization
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-3)
-    #schedular to prevent overfitting.
-        # if f1 doesnt improve for 7 epochs, reduce lr by factor of 0.5
-        # PRIMARY WAY TO PREVENT OVERFITTING (?)
+    #init model, optimizer, and scheduler
+    model     = RumorGNN().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    #if val f1 doesnt improve for 7 epochs, reduce lr by factor of 0.5
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", patience=7, factor=0.5)
 
-    # class-weighted loss to stop the model ignoring hard classes (esp. 'true')
-    counts = torch.tensor([sum(d.y.item() == i for d in train_data) for i in range(4)]).float()
-    class_weights = (1.0 / counts)
-    class_weights = (class_weights / class_weights.sum() * 4).to(device)
-
-    best_val_f1 = 0
-    best_state  = None
-    print("training...")
+    #track best val f1 and save preds/labels for classification report
+    best_val_f1     = 0
+    best_state      = None
+    best_val_preds  = None
+    best_val_labels = None
+    print("  training...")
     for epoch in range(1, 51):
-        loss = train_epoch(model, train_loader, optimizer, device, class_weights)
-        val_acc, val_f1, _, _ = evaluate(model, val_loader, device)
+        loss = train_epoch(model, train_loader, optimizer, device)
+        val_acc, val_f1, val_preds, val_labels = evaluate(model, val_loader, device)
         scheduler.step(val_f1)
         if val_f1 > best_val_f1:
-            best_val_f1 = val_f1
-            best_state  = {k: v.clone() for k, v in model.state_dict().items()}
+            best_val_f1     = val_f1
+            best_state      = {k: v.clone() for k, v in model.state_dict().items()}
+            best_val_preds  = val_preds
+            best_val_labels = val_labels
         if epoch % 5 == 0:
-            print(f"epoch {epoch:3d} | loss={loss:.4f} | val_acc={val_acc:.3f} | val_f1={val_f1:.3f}")
+            print(f"  epoch {epoch:3d} | loss={loss:.4f} | val_acc={val_acc:.3f} | val_f1={val_f1:.3f}")
 
-    # restore best checkpoint and report final test performance
+    #restore best checkpoint and print val + test reports
     model.load_state_dict(best_state)
-    test_acc, test_f1, preds, labels = evaluate(model, test_loader, device)
-    label_names = sorted(LABELS, key=LABELS.get)
-    
-    #print final results
-    print("********** Best Validation F1: ***********")
-    print(f"  {best_val_f1:.4f}")
-    print("***************** Test Set Performance: ***************")
-    print(f"  acc={test_acc:.3f}  macro_f1={test_f1:.3f}")
-    print(classification_report(labels, preds, target_names=label_names))
+    test_acc, test_f1, test_preds, test_labels = evaluate(model, test_loader, device)
+
+    print(f"\n  *** Best Validation F1: {best_val_f1:.4f} ***")
+    print(classification_report(best_val_labels, best_val_preds, target_names=label_names))
+    print(f"  *** Test  |  acc={test_acc:.3f}  macro_f1={test_f1:.3f} ***")
+    print(classification_report(test_labels, test_preds, target_names=label_names))
+
+
+def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"device: {device}")
+
+    #run ablation configs in order, add emotion configs once emotion_features() is ready
+    for use_text, use_emotion in [
+        (False, False),   #struct only
+        (True,  False),   #struct + TF-IDF
+    ]:
+        run_config(use_text, use_emotion, device)
 
 
 if __name__ == "__main__":
