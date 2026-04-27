@@ -12,12 +12,14 @@ import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv, global_mean_pool
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import f1_score, classification_report #goat
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from utils.tree_parser import parse_tree, annotate_tree
+import utils.data_loader as dl
 
 LABELS = {"false": 0, "non-rumor": 1, "true": 2, "unverified": 3}
 PATH_15 = ROOT / "data/rumor_detection_acl2017/twitter15"
@@ -25,10 +27,11 @@ PATH_16 = ROOT / "data/rumor_detection_acl2017/twitter16"
 TEXT_DATA = ROOT / "data/text_data"
 
 # feature dimensions for one node
-STRUCT_DIM  = 10                               
-BERT_DIM    = 768                                
-EMOTION_DIM = 6                                   
-FEAT_DIM    = STRUCT_DIM + BERT_DIM + EMOTION_DIM # 784
+TFIDF_DIM = 5000
+STRUCT_DIM = 10
+EMOTION_DIM = 6
+# paper-style per-node text features: TF-IDF of source tweet broadcast to every node
+FEAT_DIM    = STRUCT_DIM + TFIDF_DIM + EMOTION_DIM
 
 
 #BiGCN: two GCN streams (top-down and bottom-up), root features injected at layer 2
@@ -80,26 +83,36 @@ def compile_data(tweet_id, label, path_dir, text_vec=None, emotion_vec=None):
     root = parse_tree(tweet_id, path_dir)
     nodes = annotate_tree(root)
 
-    #root-only features
-    nodes[0].text_vec    = text_vec
+    # broadcast root-tweet text features to every node (paper-style per-node text);
+    # emotion remains a single root-level vector for now
+    for node in nodes:
+        node.text_vec = text_vec
     nodes[0].emotion_vec = emotion_vec
 
     # get max values for normalization of features
-    max_depth = max(n.depth        for n in nodes)
-    max_time = max(n.time         for n in nodes)
+    max_depth = max(n.depth for n in nodes)
+    max_time = max(n.time for n in nodes)
     max_fanout = max(n.num_children for n in nodes)
 
     #to fill in any empty text and/or emotion vectors with zeros so we can batch them
-    zeros_text = torch.zeros(BERT_DIM)
+    zeros_text = torch.zeros(TFIDF_DIM)
     zeros_emotion = torch.zeros(EMOTION_DIM)
-    
+
     rows = []
     for node in nodes:
         struct = torch.tensor(node.feature_vector(max_depth, max_time, max_fanout))
-        text = node.text_vec    if node.text_vec    is not None else zeros_text
-        emotion = node.emotion_vec if node.emotion_vec is not None else zeros_emotion
+        #use text_vec and emotion_vec if they exist, else fill with zeros
+        if node.text_vec is not None:
+            text = node.text_vec
+        else: text = zeros_text
+        if node.emotion_vec is not None:
+            emotion = node.emotion_vec
+        else: emotion = zeros_emotion
+        
         #concatenate structure, text and emotion fetures into one vector
         rows.append(torch.cat([struct, text, emotion]))
+        
+    #stack into one big tensor for the whole graph
     x = torch.stack(rows)
 
     #top-down (top_down) edges (parent->child) and bottom-up (bot_up) edges (child->parent)
@@ -122,23 +135,22 @@ def compile_data(tweet_id, label, path_dir, text_vec=None, emotion_vec=None):
                 root_feat=root_feat, y=y)
 
 
-# load a split of the data and return a list of PyG Data objects
+# load a split of the data and return a list of Data objects
 #   split_name : "train", "val", or "test"
 def load_data_from_split(split_name):
-    cache_path = ROOT / f"data/cache_{split_name}.pt"
+    cache_path = ROOT / f"data/cache_{split_name}_tfidf.pt"
     if cache_path.exists():
         return torch.load(cache_path, weights_only=False)
+    tfidf = tfidf_features()
     data_list = []
     for path_dir, year in [(PATH_15, "15"), (PATH_16, "16")]:
         json_path = TEXT_DATA / f"{split_name}_{year}.json"
         with open(json_path, encoding="utf-8") as f:
             rows = json.load(f)
-        #bot_upild one Data object per tweet in this split
-        #print(f"loading {split_name} {year}...")
-        for i, row in enumerate(rows):
-            data_list.append(compile_data(row["id"], row["label"], path_dir))
-            #if i % 100 == 0:
-            #    print(f"  {split_name} {year}: {i}/{len(rows)}")
+        for row in rows:
+            data_list.append(
+                compile_data(row["id"], row["label"], path_dir, text_vec=tfidf[row["id"]])
+            )
     torch.save(data_list, cache_path)
     return data_list
     
@@ -175,6 +187,31 @@ def evaluate(model, loader, device):
     f1  = f1_score(all_labels, all_preds, average="macro")
     return acc, f1, all_preds, all_labels
 
+def tfidf_features():
+    features = {}
+    train_rows = dl.load_split_rows("train")
+    val_rows = dl.load_split_rows("val")
+    test_rows = dl.load_split_rows("test")
+    
+    vectorizer = TfidfVectorizer(max_features=5000, sublinear_tf=True, stop_words="english", min_df=2)
+    
+    #fit on train ONLY
+    #
+    vectorizer.fit([r["text"] for r in train_rows])
+    
+    for rows in (train_rows, val_rows, test_rows):
+        ids = [r["id"] for r in rows]
+        mat = vectorizer.transform([r["text"] for r in rows]).toarray()
+        #
+        tensor = torch.from_numpy(mat).float()
+        if tensor.shape[1] < TFIDF_DIM:
+            pad = torch.zeros(tensor.shape[0], TFIDF_DIM - tensor.shape[1])
+            tensor = torch.cat([tensor, pad], dim=1)
+        for tid, vec in zip(ids, tensor):
+            features[tid] = vec.contiguous()
+            
+    torch.save(features, ROOT / "data/tfidf_features.pt")
+    return features
 
 def main():
     # use GPU if available, else CPU

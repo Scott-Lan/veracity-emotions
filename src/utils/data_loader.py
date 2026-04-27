@@ -38,12 +38,22 @@ def load_split_combined(split_name):
         label.append(row["label"])
     return (text, label)
 
+#get rows as a list instead of individual values. used for tfidf features and gnn model
+def load_split_rows(split_name):
+    rows = []
+    for year in ["15", "16"]:
+        json_path = TEXT_DATA / f"{split_name}_{year}.json"
+        with open(json_path, encoding="utf-8") as f:
+            rows.extend(json.load(f))
+    return rows
+
 #fetch tree data based on id
 def get_tree(id, path_dir):
     tree_path = f"{path_dir}/tree/{id}.txt"
     with open(tree_path, encoding="utf-8") as f:
         tree = f.read()
     return tree
+
 
 if __name__ == "__main__":
     print("PATH_TWITTER15:", PATH_TWITTER15)
