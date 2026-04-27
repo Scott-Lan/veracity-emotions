@@ -35,7 +35,7 @@ FEAT_DIM    = STRUCT_DIM + TFIDF_DIM + EMOTION_DIM
 
 #BiGCN: two GCN streams (top-down and bottom-up), root features injected at layer 2
 class RumorGNN(nn.Module):
-    def __init__(self, in_dim=FEAT_DIM, hidden=256, num_classes=4, dropout=0.3):
+    def __init__(self, in_dim=FEAT_DIM, hidden=256, num_classes=4, dropout=0.5):
         super().__init__()
         #top-down conv layers (parent -> child)
         self.top_down_conv1 = GCNConv(in_dim, hidden)
@@ -164,16 +164,14 @@ def load_data_list(split_name, use_text=True, use_emotion=True):
     return data_list
     
 # one pass through the training data, returns the average batch loss
-def train_epoch(model, loader, optimizer, device):
+def train_epoch(model, loader, optimizer, device, class_weights=None):
     model.train()
     total_loss = 0
     for batch in loader:
         batch = batch.to(device)
         optimizer.zero_grad()
-        #features and edges return logits which we compare to labels
         logits = model(batch.x, batch.top_down_edge_index, batch.bot_up_edge_index, batch.root_feat, batch.text_feat, batch.batch)
-        #y = labels
-        loss = F.cross_entropy(logits, batch.y)
+        loss = F.cross_entropy(logits, batch.y, weight=class_weights)
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
@@ -214,22 +212,25 @@ def main():
     test_loader = DataLoader(test_data,  batch_size=64)
 
     # init model, optimizer, and scheduler
-    model = RumorGNN().to(device)
-    #optimizer using L2 regularization 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    model = RumorGNN(dropout=0.5).to(device)
+    #optimizer with L2 weight decay for regularization
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-3)
     #schedular to prevent overfitting.
         # if f1 doesnt improve for 7 epochs, reduce lr by factor of 0.5
-        # PRIMARY WAY TO PREVENT OVERFITTING
+        # PRIMARY WAY TO PREVENT OVERFITTING (?)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", patience=7, factor=0.5
-    )
+        optimizer, mode="max", patience=7, factor=0.5)
 
-    # train, track best val F1, save its state for final test eval
+    # class-weighted loss to stop the model ignoring hard classes (esp. 'true')
+    counts = torch.tensor([sum(d.y.item() == i for d in train_data) for i in range(4)]).float()
+    class_weights = (1.0 / counts)
+    class_weights = (class_weights / class_weights.sum() * 4).to(device)
+
     best_val_f1 = 0
     best_state  = None
     print("training...")
     for epoch in range(1, 51):
-        loss = train_epoch(model, train_loader, optimizer, device)
+        loss = train_epoch(model, train_loader, optimizer, device, class_weights)
         val_acc, val_f1, _, _ = evaluate(model, val_loader, device)
         scheduler.step(val_f1)
         if val_f1 > best_val_f1:

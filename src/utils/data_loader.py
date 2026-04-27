@@ -11,7 +11,7 @@ import torch
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 ROOT = Path(__file__).resolve().parents[2]
-TFIDF_DIM = 1000
+TFIDF_DIM = 500
 
 PATH_TWITTER15 = ROOT / "data/rumor_detection_acl2017/twitter15"
 PATH_TWITTER16 = ROOT / "data/rumor_detection_acl2017/twitter16"
