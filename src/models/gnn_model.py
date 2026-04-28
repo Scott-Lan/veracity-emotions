@@ -1,7 +1,7 @@
 #PURPOSE: BiGCN classifier for rumor detection on Twitter15/16 cascade trees.
 #INPUT: Twitter Dataset json files for train, val, and test data, with tree data
 #OUTPUT: classification report for val and test data
-
+import os
 import json
 import random
 import sys
@@ -18,7 +18,7 @@ from sklearn.metrics import f1_score, classification_report, confusion_matrix #g
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
-
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'  # for deterministic behavior in CUDA ops
 from utils.tree_parser import parse_tree, annotate_tree
 from utils.data_loader import TFIDF_DIM
 import utils.data_loader as dl
@@ -57,15 +57,15 @@ class RumorGNN(nn.Module):
             nn.Linear(hidden, num_classes),
         )
 
-    def forward(self, x, edge_index, bot_up_edge_index, root_feat, text_feat, batch):
-        #broadcast per-tree text features to every node and form full per-node features.
-        #text is stored once per tree to avoid the per-node duplication that blew up RAM.
+    def forward(self, x, edge_index, bot_up_edge_index, root_feat, text_feat, emotion_feat, batch):
+        #broadcast per-tree text and emotion features to every node
         tf = text_feat[batch]                          # (N, TFIDF_DIM)
-        #drop only the TF-IDF slice to stop token memorization 
+        ef = emotion_feat[batch]                       # (N, EMOTION_DIM)
+        #drop only the TF-IDF slice to stop token memorization
         #struct+emotion are too few/informative to drop
         tf_in = F.dropout(tf, p=self.dropout, training=self.training)
-        x_full = torch.cat([x, tf_in], dim=1)          # (N, STRUCT+EMOTION+TFIDF)
-        rf = torch.cat([root_feat[batch], tf], dim=1)  # (N, STRUCT+EMOTION+TFIDF)
+        x_full = torch.cat([x, tf_in, ef], dim=1)     # (N, STRUCT+TFIDF+EMOTION)
+        rf = torch.cat([root_feat[batch], tf, ef], dim=1)  # (N, STRUCT+TFIDF+EMOTION)
 
         #top-down stream
         #relu after each conv, dropout after layer 1, inject root features before layer 2
@@ -94,32 +94,16 @@ def compile_data(tweet_id, label, path_dir, text_vec=None, emotion_vec=None):
     root = parse_tree(tweet_id, path_dir)
     nodes = annotate_tree(root)
 
-    # emotion remains a single root-level vector for now;
-    # text is stored once per tree (see text_feat below) and broadcast at forward time
-    nodes[0].emotion_vec = emotion_vec
-
     # get max values for normalization of features
     max_depth = max(n.depth for n in nodes)
     max_time = max(n.time for n in nodes)
     max_fanout = max(n.num_children for n in nodes)
 
-    zeros_emotion = torch.zeros(EMOTION_DIM)
-
-    # per-node compact features: struct + emotion only (no text)
+    # per-node features: struct only; text and emotion broadcast at forward time
     rows = []
     for node in nodes:
-        struct = torch.tensor(node.feature_vector(max_depth, max_time, max_fanout))
-        # if text_vec is not None:
-        #     text = text_vec
-        # else:
-        #     text = torch.zeros(TFIDF_DIM)
-        if emotion_vec is not None:
-            emotion = node.emotion_vec
-        else:
-            emotion = zeros_emotion
-            
-        rows.append(torch.cat([struct, emotion]))
-    x = torch.stack(rows)  # (N, STRUCT_DIM + EMOTION_DIM)
+        rows.append(torch.tensor(node.feature_vector(max_depth, max_time, max_fanout)))
+    x = torch.stack(rows)  # (N, STRUCT_DIM)
 
     #top-down (top_down) edges (parent->child) and bottom-up (bot_up) edges (child->parent)
     index_of = {n: i for i, n in enumerate(nodes)}
@@ -133,17 +117,21 @@ def compile_data(tweet_id, label, path_dir, text_vec=None, emotion_vec=None):
     top_down_edge_index = torch.tensor(top_down_edges, dtype=torch.long).t().contiguous()
     bot_up_edge_index = torch.tensor(bot_up_edges, dtype=torch.long).t().contiguous()
 
-    # one TF-IDF row per tree; broadcast to every node inside RumorGNN.forward
+    # one row per tree for text and emotion; broadcast to every node inside RumorGNN.forward
     if text_vec is None:
         text_vec = torch.zeros(TFIDF_DIM)
     text_feat = text_vec.unsqueeze(0)
 
-    # root's(struct+emotion) features; text comes via text_feat at forward time
-    root_feat = x[0].unsqueeze(0)  # (1, STRUCT_DIM + EMOTION_DIM)
+    if emotion_vec is None:
+        emotion_vec = torch.zeros(EMOTION_DIM)
+    emotion_feat = emotion_vec.unsqueeze(0)
+
+    # root's struct features; text and emotion come via feat tensors at forward time
+    root_feat = x[0].unsqueeze(0)  # (1, STRUCT_DIM)
 
     y = torch.tensor(LABELS[label], dtype=torch.long)
     return Data(x=x, top_down_edge_index=top_down_edge_index, bot_up_edge_index=bot_up_edge_index,
-                root_feat=root_feat, text_feat=text_feat, y=y)
+                root_feat=root_feat, text_feat=text_feat, emotion_feat=emotion_feat, y=y)
 
 
 # load a split of the data and return a list of Data objects
@@ -178,7 +166,7 @@ def train_epoch(model, loader, optimizer, device, class_weights=None):
     for batch in loader:
         batch = batch.to(device)
         optimizer.zero_grad()
-        logits = model(batch.x, batch.top_down_edge_index, batch.bot_up_edge_index, batch.root_feat, batch.text_feat, batch.batch)
+        logits = model(batch.x, batch.top_down_edge_index, batch.bot_up_edge_index, batch.root_feat, batch.text_feat, batch.emotion_feat, batch.batch)
         loss = F.cross_entropy(logits, batch.y, weight=class_weights)
         loss.backward()
         optimizer.step()
@@ -195,7 +183,7 @@ def evaluate(model, loader, device):
     #iterate over all batches in the loader and evaluate
     for batch in loader:
         batch = batch.to(device)
-        preds = model(batch.x, batch.top_down_edge_index, batch.bot_up_edge_index, batch.root_feat, batch.text_feat, batch.batch).argmax(dim=1)
+        preds = model(batch.x, batch.top_down_edge_index, batch.bot_up_edge_index, batch.root_feat, batch.text_feat, batch.emotion_feat, batch.batch).argmax(dim=1)
         all_preds.extend(preds.cpu().tolist())
         all_labels.extend(batch.y.cpu().tolist())
     acc = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels)
@@ -204,6 +192,7 @@ def evaluate(model, loader, device):
 
 #run a full train/val/test cycle for one ablation config, print classification reports
 def run_config(use_text, use_emotion, device):
+    set_seed(255)
     label_names = sorted(LABELS, key=LABELS.get)
     #build config string for display and cache naming
     config = (("t" if use_text else "") + ("e" if use_emotion else "")) or "struct"
@@ -220,25 +209,33 @@ def run_config(use_text, use_emotion, device):
     #dataLoader makes graphs into one disjoint mega-graph
     gen = torch.Generator()
     gen.manual_seed(255)
+<<<<<<< HEAD
     train_loader = DataLoader(train_data, batch_size=32, shuffle=True, generator = gen)
+=======
+    train_loader = DataLoader(train_data, batch_size=32, shuffle=True, generator=gen)
+>>>>>>> f8f44d513d5613a55e86d20c1c8c4dd7c4917174
     val_loader   = DataLoader(val_data,   batch_size=64)
     test_loader  = DataLoader(test_data,  batch_size=64)
 
     #init model, optimizer, and scheduler
     model     = RumorGNN().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
-    #if val f1 doesnt improve for 7 epochs, reduce lr by factor of 0.5
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-3)
+    #if val f1 doesnt improve for 10 epochs, reduce lr by factor of 0.5
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", patience=7, factor=0.5)
+        optimizer, mode="max", patience=15, factor=0.5)
 
     #track best val f1 and save preds/labels for classification report
     best_val_f1     = 0
     best_state      = None
     best_val_preds  = None
     best_val_labels = None
+<<<<<<< HEAD
+=======
+    #counter to stop early if no improvment. prevents overfitting and saves time.
+>>>>>>> f8f44d513d5613a55e86d20c1c8c4dd7c4917174
     no_improve = 0
     print("  training...")
-    for epoch in range(1, 51):
+    for epoch in range(1, 101):
         loss = train_epoch(model, train_loader, optimizer, device)
         val_acc, val_f1, val_preds, val_labels = evaluate(model, val_loader, device)
         scheduler.step(val_f1)
@@ -250,9 +247,17 @@ def run_config(use_text, use_emotion, device):
             best_val_preds  = val_preds
             best_val_labels = val_labels
             no_improve = 0
+<<<<<<< HEAD
 
+=======
+        else:
+            no_improve += 1
+>>>>>>> f8f44d513d5613a55e86d20c1c8c4dd7c4917174
         if epoch % 5 == 0:
             print(f"  epoch {epoch:3d} | loss={loss:.4f} | val_acc={val_acc:.3f} | val_f1={val_f1:.3f}")
+        if no_improve >= 20:
+            print(f"  early stopping at epoch {epoch}")
+            break
 
         if no_improve > 15:
             break
@@ -282,7 +287,7 @@ def set_seed(seed=255):
 
 
 def main():
-    set_seed()
+    set_seed(255)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
 
