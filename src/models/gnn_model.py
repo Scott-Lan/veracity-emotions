@@ -218,7 +218,9 @@ def run_config(use_text, use_emotion, device):
     print(f"  train={len(train_data)}, val={len(val_data)}, test={len(test_data)}")
 
     #dataLoader makes graphs into one disjoint mega-graph
-    train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
+    gen = torch.Generator()
+    gen.manual_seed(255)
+    train_loader = DataLoader(train_data, batch_size=32, shuffle=True, generator = gen)
     val_loader   = DataLoader(val_data,   batch_size=64)
     test_loader  = DataLoader(test_data,  batch_size=64)
 
@@ -234,19 +236,26 @@ def run_config(use_text, use_emotion, device):
     best_state      = None
     best_val_preds  = None
     best_val_labels = None
+    no_improve = 0
     print("  training...")
     for epoch in range(1, 51):
         loss = train_epoch(model, train_loader, optimizer, device)
         val_acc, val_f1, val_preds, val_labels = evaluate(model, val_loader, device)
         scheduler.step(val_f1)
+        if (0 < (val_f1 - best_val_f1) < 0.01):
+            no_improve += 1
         if val_f1 > best_val_f1:
             best_val_f1     = val_f1
             best_state      = {k: v.clone() for k, v in model.state_dict().items()}
             best_val_preds  = val_preds
             best_val_labels = val_labels
+            no_improve = 0
+
         if epoch % 5 == 0:
             print(f"  epoch {epoch:3d} | loss={loss:.4f} | val_acc={val_acc:.3f} | val_f1={val_f1:.3f}")
 
+        if no_improve > 15:
+            break
     #restore best checkpoint and print val + test reports
     model.load_state_dict(best_state)
     test_acc, test_f1, test_preds, test_labels = evaluate(model, test_loader, device)
