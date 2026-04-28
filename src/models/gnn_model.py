@@ -263,7 +263,7 @@ def run_config(use_text, use_emotion, device):
         print(f"  {name:12s}" + "".join(f"{v:>11d}" for v in row))
 
 
-def set_seed(seed=42):
+def set_seed(seed=255):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
