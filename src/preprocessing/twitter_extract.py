@@ -1,5 +1,5 @@
 #PURPOSE: extract twitter15 and twitter16 data from the original dataset files and write to json files
-#INPUT: none
+#INPUT: original twitter15 and twitter16 dataset files (label.txt, source_tweets.txt, tree/*.txt)
 #OUTPUT: json files for train, val, and test data
 #NOTES: 
 # import build_data() from twitter_extract.py 
@@ -15,9 +15,9 @@ PATH_TWITTER16 = ROOT / "data/rumor_detection_acl2017/twitter16"
 
 # get the tree for a given id and path
 #get_tree(80080680482123777, "twitter15") -> 80080680482123777.txt tree
-# def get_tree(id, path):
-#     with open(f"{path}/tree/{id}.txt", "r") as f:
-#         return f.read()
+def get_tree(id, path):
+    with open(f"{path}/tree/{id}.txt", "r") as f:
+        return f.read()
    
 
 #read each line of the label.txt file and return the tweet_id and label
@@ -104,7 +104,6 @@ def build_data():
     for data, year in [(data_15, "15"), (data_16, "16")]:
         train, val, test = temporal_split(data)
         write_split(output_dir, year, train, val, test)
-
 
 
 if __name__ == "__main__":

@@ -83,6 +83,16 @@ def vectorize_text(train_texts, val_texts, test_texts):
 
     return X_train, X_val, X_test
 
+def vectorize_text_gnn(train_texts, val_texts, test_texts):
+   
+    vectorizer = TfidfVectorizer(max_features=5000, sublinear_tf=True, stop_words="english", min_df=2)
+    # fit on train ONLY
+    X_train = vectorizer.fit(train_texts)
+    #use same vectorizer for val and test
+    X_val = vectorizer.transform(val_texts)
+    X_test = vectorizer.transform(test_texts)
+
+    return X_train, X_val, X_test
 
 def lr_classifier(X_train, Y_train, X_val, Y_val):
     best_C = None

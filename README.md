@@ -23,7 +23,6 @@ Python version:
 python(3) {PROJECT_ROOT}/src/text_model.py
 ```
 
-will extract data and create json files if needed.
 
 ## manual download
 ```     

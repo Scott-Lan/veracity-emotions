@@ -7,7 +7,11 @@
 import json
 from pathlib import Path
 
+import torch
+from sklearn.feature_extraction.text import TfidfVectorizer
+
 ROOT = Path(__file__).resolve().parents[2]
+TFIDF_DIM = 1000
 
 PATH_TWITTER15 = ROOT / "data/rumor_detection_acl2017/twitter15"
 PATH_TWITTER16 = ROOT / "data/rumor_detection_acl2017/twitter16"
@@ -38,25 +42,14 @@ def load_split_combined(split_name):
         label.append(row["label"])
     return (text, label)
 
-#the same as load_split(), but with trees.
-def load_split_with_trees(split_name):
-    #load the data with the trees
-    text = []
-    label = []
-    id = []
-    tree = []
-    for path_dir, year in [(PATH_TWITTER15, "15"), (PATH_TWITTER16, "16")]:
-        json_path = f"{path_dir}/{split_name}_{year}.json"
+#get rows as a list instead of individual values. used for tfidf features and gnn model
+def load_split_rows(split_name):
+    rows = []
+    for year in ["15", "16"]:
+        json_path = TEXT_DATA / f"{split_name}_{year}.json"
         with open(json_path, encoding="utf-8") as f:
-            data = json.load(f)
-        for row in data:
-            text.append(row["text"])
-            label.append(row["label"])
-            id.append(row["id"])
-            tree.append(get_tree(id, path_dir))
-        
- 
-    return (text, label, tree)
+            rows.extend(json.load(f))
+    return rows
 
 #fetch tree data based on id
 def get_tree(id, path_dir):
@@ -64,6 +57,30 @@ def get_tree(id, path_dir):
     with open(tree_path, encoding="utf-8") as f:
         tree = f.read()
     return tree
+
+#get features for GNN model using tfidf vectorizer.
+def tfidf_features():
+    cache_path = ROOT / "data/tfidf_features.pt"
+    if cache_path.exists():
+        return torch.load(cache_path, weights_only=False)
+
+    train_rows = load_split_rows("train")
+    val_rows = load_split_rows("val")
+    test_rows = load_split_rows("test")
+
+    vectorizer = TfidfVectorizer(max_features=TFIDF_DIM, sublinear_tf=True, stop_words="english", min_df=2)
+    vectorizer.fit([r["text"] for r in train_rows])
+
+    features = {}
+    for rows in (train_rows, val_rows, test_rows):
+        ids = [r["id"] for r in rows]
+        mat = vectorizer.transform([r["text"] for r in rows]).toarray()
+        tensor = torch.from_numpy(mat).float()
+        for tid, vec in zip(ids, tensor):
+            features[tid] = vec.contiguous()
+
+    torch.save(features, cache_path)
+    return features
 
 if __name__ == "__main__":
     print("PATH_TWITTER15:", PATH_TWITTER15)
