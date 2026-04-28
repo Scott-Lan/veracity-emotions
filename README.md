@@ -1,5 +1,5 @@
 # veracity-emotions
-# Andrew Clark, Scott Landry, Jason Ossai
+## Andrew Clark, Scott Landry, Jason Ossai
 COMP4415 group project: **train an emotion model on GoEmotions**, apply it to **Twitter15/16 source tweets**, and predict **true vs false rumors** using **emotional features**—plus a **text baseline** on the same splits to show whether emotion adds signal beyond generic wording.
 
 ## To run setup.sh:
