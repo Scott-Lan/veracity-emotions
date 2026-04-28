@@ -212,7 +212,7 @@ def run_config(use_text, use_emotion, device, seed=255, verbose=False):
 
     #init model, optimizer, and scheduler
     model     = RumorGNN().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=5e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
     #if val f1 doesnt improve for 15 epochs, reduce lr by factor of 0.5
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", patience=15, factor=0.5)
@@ -280,31 +280,11 @@ def set_seed(seed=255):
     torch.use_deterministic_algorithms(True, warn_only=True)
 
 
-def summarize_config(config, results, label_names):
-    val_f1s   = np.array([r["best_val_f1"] for r in results])
-    test_accs = np.array([r["test_acc"]    for r in results])
-    test_f1s  = np.array([r["test_f1"]     for r in results])
-    per_class = np.stack([r["per_class_f1"] for r in results])  # (n_seeds, n_classes)
-
-    print(f"\n  *** Summary over {len(results)} seeds (CONFIG: {config}) ***")
-    print(f"  val_f1   = {val_f1s.mean():.3f} ± {val_f1s.std(ddof=0):.3f}"
-          f"   (min={val_f1s.min():.3f}, max={val_f1s.max():.3f})")
-    print(f"  test_acc = {test_accs.mean():.3f} ± {test_accs.std(ddof=0):.3f}"
-          f"   (min={test_accs.min():.3f}, max={test_accs.max():.3f})")
-    print(f"  test_f1  = {test_f1s.mean():.3f} ± {test_f1s.std(ddof=0):.3f}"
-          f"   (min={test_f1s.min():.3f}, max={test_f1s.max():.3f})")
-    print(f"  per-class test F1 (mean ± std):")
-    for i, name in enumerate(label_names):
-        col = per_class[:, i]
-        print(f"    {name:12s} {col.mean():.3f} ± {col.std(ddof=0):.3f}"
-              f"   (min={col.min():.3f}, max={col.max():.3f})")
-
-
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
 
-    seeds = [255, 42, 7, 1, 100]
+    seed = 255
     label_names = sorted(LABELS, key=LABELS.get)
 
     configs = [
@@ -317,24 +297,23 @@ def main():
     for use_text, use_emotion in configs:
         config = (("t" if use_text else "") + ("e" if use_emotion else "")) or "struct"
         print(f"\n{'='*55}")
-        print(f"  CONFIG: {config}  (seeds={seeds})")
+        print(f"  CONFIG: {config}  (seed={seed})")
         print(f"{'='*55}")
 
         results = []
-        for seed in seeds:
-            r = run_config(use_text, use_emotion, device, seed=seed, verbose=False)
-            results.append(r)
-            print(f"  seed={seed:>4d} | epochs={r['epochs']:>3d}"
-                  f" | val_f1={r['best_val_f1']:.3f}"
-                  f" | test_acc={r['test_acc']:.3f}"
-                  f" | test_f1={r['test_f1']:.3f}")
+  
+        r = run_config(use_text, use_emotion, device, seed=seed, verbose=False)
+        results.append(r)
+        print(f"  seed={seed:>4d} | epochs={r['epochs']:>3d}"
+                f" | val_f1={r['best_val_f1']:.3f}"
+                f" | test_acc={r['test_acc']:.3f}"
+                f" | test_f1={r['test_f1']:.3f}")
 
-        summarize_config(config, results, label_names)
 
         #show the test confusion matrix from the median-test_f1 seed for sanity
         median_idx = int(np.argsort([r["test_f1"] for r in results])[len(results) // 2])
         med = results[median_idx]
-        print(f"\n  median-seed test classification report (seed={med['seed']}, test_f1={med['test_f1']:.3f}):")
+        print(f"\n  median classification report (seed={med['seed']}, test_f1={med['test_f1']:.3f}):")
         print(classification_report(med["test_labels"], med["test_preds"], target_names=label_names))
         cm = confusion_matrix(med["test_labels"], med["test_preds"], labels=list(range(len(label_names))))
         print("  test confusion matrix (rows=true, cols=pred):")
