@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from utils.tree_parser import parse_tree, annotate_tree
 from utils.data_loader import TFIDF_DIM
 import utils.data_loader as dl
+from models.emotion_model import get_emotion_features
 
 LABELS = {"false": 0, "non-rumor": 1, "true": 2, "unverified": 3}
 PATH_15 = ROOT / "data/rumor_detection_acl2017/twitter15"
@@ -155,8 +156,7 @@ def load_data_list(split_name, use_text=True, use_emotion=True):
     if cache_path.exists():
         return torch.load(cache_path, weights_only=False)
     tfidf = dl.tfidf_features() if use_text else None
-    #emotion = emotion_features() if use_emotion else None
-    emotion = None # comment out when emotion classifier is available
+    emotion = get_emotion_features() if use_emotion else None
     data_list = []
     for path_dir, year in [(PATH_15, "15"), (PATH_16, "16")]:
         json_path = TEXT_DATA / f"{split_name}_{year}.json"
@@ -273,14 +273,15 @@ def set_seed(seed=255):
 
 
 def main():
-    set_seed(42)
+    set_seed()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
 
-    #run ablation configs in order, add emotion configs once emotion_features() is ready
     for use_text, use_emotion in [
         (False, False),   #struct only
         (True,  False),   #struct + TF-IDF
+        (False, True),    #struct + emotion
+        (True,  True),    #struct + TF-IDF + emotion
     ]:
         run_config(use_text, use_emotion, device)
 

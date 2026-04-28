@@ -1,4 +1,5 @@
 from pathlib import Path
+import torch
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.multiclass import OneVsRestClassifier
@@ -171,6 +172,27 @@ def create_emotion_features(clf, vectorizer, labels, base_path, dataset_folder, 
 
     df.to_csv(output_path, index=False)
     print(f"Saved {len(df)} samples to {output_path}")
+    
+EKMAN_KEYS = ["anger", "disgust", "fear", "joy", "sadness", "surprise"]
+
+def get_emotion_features():
+    ROOT = Path(__file__).resolve().parents[2]
+    cache_path = ROOT / "data/emotion_features.pt"
+    if cache_path.exists():
+        return torch.load(cache_path, weights_only=False)
+
+    features = {}
+    for dataset in ["twitter15", "twitter16"]:
+        csv_path = ROOT / f"data/rumor_detection_acl2017/{dataset}/emotions.csv"
+        df = pd.read_csv(csv_path)
+        for _, row in df.iterrows():
+            vec = torch.tensor([row[k] for k in EKMAN_KEYS], dtype=torch.float32)
+            features[str(row["id"])] = vec
+
+    torch.save(features, cache_path)
+    return features
+
+
 
 
 def main():
