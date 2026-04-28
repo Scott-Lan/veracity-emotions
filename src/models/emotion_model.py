@@ -1,4 +1,5 @@
 from pathlib import Path
+
 import torch
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
@@ -102,7 +103,7 @@ def lr_clf(X_train, y_train, X_val, y_val):
     best_score = 0
     best_clf = None
     for c in [1]: #[0.0001, 0.001, 0.01, 0.1, 0.2, 0.5, 0.8, 1, 2, 5, 10, 100, 200, 500, 1000]:
-        lr = LogisticRegression(C=c, max_iter=1000, solver='liblinear', class_weight='balanced')
+        lr = LogisticRegression(C=c, max_iter=1000, solver='liblinear', class_weight='balanced', random_state=255)
         clf = OneVsRestClassifier(lr)
         clf.fit(X_train, y_train)
         #evaluate on val data using macro F1 score

@@ -1,7 +1,7 @@
 #PURPOSE: BiGCN classifier for rumor detection on Twitter15/16 cascade trees.
 #INPUT: Twitter Dataset json files for train, val, and test data, with tree data
 #OUTPUT: classification report for val and test data
-
+import os
 import json
 import random
 import sys
@@ -18,7 +18,7 @@ from sklearn.metrics import f1_score, classification_report, confusion_matrix #g
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
-
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'  # for deterministic behavior in CUDA ops
 from utils.tree_parser import parse_tree, annotate_tree
 from utils.data_loader import TFIDF_DIM
 import utils.data_loader as dl
@@ -192,7 +192,7 @@ def evaluate(model, loader, device):
 
 #run a full train/val/test cycle for one ablation config, print classification reports
 def run_config(use_text, use_emotion, device):
-    set_seed()
+    set_seed(255)
     label_names = sorted(LABELS, key=LABELS.get)
     #build config string for display and cache naming
     config = (("t" if use_text else "") + ("e" if use_emotion else "")) or "struct"
@@ -207,24 +207,28 @@ def run_config(use_text, use_emotion, device):
     print(f"  train={len(train_data)}, val={len(val_data)}, test={len(test_data)}")
 
     #dataLoader makes graphs into one disjoint mega-graph
-    train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
+    gen = torch.Generator()
+    gen.manual_seed(255)
+    train_loader = DataLoader(train_data, batch_size=32, shuffle=True, generator=gen)
     val_loader   = DataLoader(val_data,   batch_size=64)
     test_loader  = DataLoader(test_data,  batch_size=64)
 
     #init model, optimizer, and scheduler
     model     = RumorGNN().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-3)
     #if val f1 doesnt improve for 10 epochs, reduce lr by factor of 0.5
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", patience=10, factor=0.5)
+        optimizer, mode="max", patience=15, factor=0.5)
 
     #track best val f1 and save preds/labels for classification report
     best_val_f1     = 0
     best_state      = None
     best_val_preds  = None
     best_val_labels = None
+    #counter to stop early if no improvment. prevents overfitting and saves time.
+    no_improve = 0
     print("  training...")
-    for epoch in range(1, 76):
+    for epoch in range(1, 101):
         loss = train_epoch(model, train_loader, optimizer, device)
         val_acc, val_f1, val_preds, val_labels = evaluate(model, val_loader, device)
         scheduler.step(val_f1)
@@ -233,8 +237,14 @@ def run_config(use_text, use_emotion, device):
             best_state      = {k: v.clone() for k, v in model.state_dict().items()}
             best_val_preds  = val_preds
             best_val_labels = val_labels
+            no_improve = 0
+        else:
+            no_improve += 1
         if epoch % 5 == 0:
             print(f"  epoch {epoch:3d} | loss={loss:.4f} | val_acc={val_acc:.3f} | val_f1={val_f1:.3f}")
+        if no_improve >= 20:
+            print(f"  early stopping at epoch {epoch}")
+            break
 
     #restore best checkpoint and print val + test reports
     model.load_state_dict(best_state)
@@ -262,7 +272,7 @@ def set_seed(seed=255):
 
 
 def main():
-    set_seed()
+    set_seed(255)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
 
