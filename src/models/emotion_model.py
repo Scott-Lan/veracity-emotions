@@ -1,4 +1,6 @@
 from pathlib import Path
+
+import torch
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.multiclass import OneVsRestClassifier
@@ -101,7 +103,7 @@ def lr_clf(X_train, y_train, X_val, y_val):
     best_score = 0
     best_clf = None
     for c in [1]: #[0.0001, 0.001, 0.01, 0.1, 0.2, 0.5, 0.8, 1, 2, 5, 10, 100, 200, 500, 1000]:
-        lr = LogisticRegression(C=c, max_iter=1000, solver='liblinear', class_weight='balanced')
+        lr = LogisticRegression(C=c, max_iter=1000, solver='liblinear', class_weight='balanced', random_state=255)
         clf = OneVsRestClassifier(lr)
         clf.fit(X_train, y_train)
         #evaluate on val data using macro F1 score
@@ -171,6 +173,29 @@ def create_emotion_features(clf, vectorizer, labels, base_path, dataset_folder, 
 
     df.to_csv(output_path, index=False)
     print(f"Saved {len(df)} samples to {output_path}")
+    
+EKMAN_KEYS = ["anger", "disgust", "fear", "joy", "sadness", "surprise"]
+
+def get_emotion_features():
+    ROOT = Path(__file__).resolve().parents[2]
+    cache_path = ROOT / "data/emotion_features.pt"
+    if cache_path.exists():
+        return torch.load(cache_path, weights_only=False)
+
+    features = {}
+    for dataset in ["twitter15", "twitter16"]:
+        csv_path = ROOT / f"data/rumor_detection_acl2017/{dataset}/emotions.csv"
+        # force id as string: iterrows() promotes a mixed int64/float64 row to
+        # a float64 Series, which mangles 18-digit tweet ids into '6.6e+17'.
+        df = pd.read_csv(csv_path, dtype={"id": str})
+        for _, row in df.iterrows():
+            vec = torch.tensor([row[k] for k in EKMAN_KEYS], dtype=torch.float32)
+            features[row["id"]] = vec
+
+    torch.save(features, cache_path)
+    return features
+
+
 
 
 def main():
