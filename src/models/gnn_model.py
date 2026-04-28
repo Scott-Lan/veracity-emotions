@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv, global_mean_pool
-from sklearn.metrics import f1_score, classification_report #goat
+from sklearn.metrics import f1_score, classification_report, confusion_matrix #goat
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
@@ -28,7 +28,8 @@ TEXT_DATA = ROOT / "data/text_data"
 
 # feature dimensions for one node
 STRUCT_DIM = 10
-EMOTION_DIM = 6
+EMOTION_KEYS = ["anger", "disgust", "fear", "joy", "sadness", "surprise"]
+EMOTION_DIM = len(EMOTION_KEYS)
 # paper-style per-node text features: TF-IDF of source tweet broadcast to every node
 FEAT_DIM    = STRUCT_DIM + TFIDF_DIM + EMOTION_DIM
 
@@ -57,7 +58,9 @@ class RumorGNN(nn.Module):
         #broadcast per-tree text features to every node and form full per-node features.
         #text is stored once per tree to avoid the per-node duplication that blew up RAM.
         tf = text_feat[batch]                          # (N, TFIDF_DIM)
-        x_full = torch.cat([x, tf], dim=1)             # (N, STRUCT+EMOTION+TFIDF)
+        #drop only the TF-IDF slice to stop token memorization; struct+emotion are too few/informative to drop
+        tf_in = F.dropout(tf, p=self.dropout, training=self.training)
+        x_full = torch.cat([x, tf_in], dim=1)          # (N, STRUCT+EMOTION+TFIDF)
         rf = torch.cat([root_feat[batch], tf], dim=1)  # (N, STRUCT+EMOTION+TFIDF)
 
         #top-down stream
@@ -247,6 +250,12 @@ def run_config(use_text, use_emotion, device):
     print(classification_report(best_val_labels, best_val_preds, target_names=label_names))
     print(f"  *** Test  |  acc={test_acc:.3f}  macro_f1={test_f1:.3f} ***")
     print(classification_report(test_labels, test_preds, target_names=label_names))
+    #confusion matrix shows where each true class actually got predicted
+    cm = confusion_matrix(test_labels, test_preds, labels=list(range(len(label_names))))
+    print("  test confusion matrix (rows=true, cols=pred):")
+    print(f"  {'':12s}" + "".join(f"{n:>11s}" for n in label_names))
+    for name, row in zip(label_names, cm):
+        print(f"  {name:12s}" + "".join(f"{v:>11d}" for v in row))
 
 
 def main():
