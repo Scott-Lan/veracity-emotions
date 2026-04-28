@@ -3,9 +3,11 @@
 #OUTPUT: classification report for val and test data
 
 import json
+import random
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -58,14 +60,17 @@ class RumorGNN(nn.Module):
         #broadcast per-tree text features to every node and form full per-node features.
         #text is stored once per tree to avoid the per-node duplication that blew up RAM.
         tf = text_feat[batch]                          # (N, TFIDF_DIM)
-        #drop only the TF-IDF slice to stop token memorization; struct+emotion are too few/informative to drop
+        #drop only the TF-IDF slice to stop token memorization 
+        #struct+emotion are too few/informative to drop
         tf_in = F.dropout(tf, p=self.dropout, training=self.training)
         x_full = torch.cat([x, tf_in], dim=1)          # (N, STRUCT+EMOTION+TFIDF)
         rf = torch.cat([root_feat[batch], tf], dim=1)  # (N, STRUCT+EMOTION+TFIDF)
 
         #top-down stream
         #relu after each conv, dropout after layer 1, inject root features before layer 2
+            #relu prevents negative values from dominating the results. (Rectified Linear Unit)
         x_top_down = F.relu(self.top_down_conv1(x_full, edge_index))
+        #dropout "drops" a random subset of activatiosn to prevent overfitting
         x_top_down = F.dropout(x_top_down, p=self.dropout, training=self.training)
         x_top_down = F.relu(self.top_down_conv2(torch.cat([x_top_down, rf], dim=1), edge_index))
 
@@ -258,7 +263,17 @@ def run_config(use_text, use_emotion, device):
         print(f"  {name:12s}" + "".join(f"{v:>11d}" for v in row))
 
 
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 def main():
+    set_seed(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
 
