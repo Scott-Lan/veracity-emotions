@@ -39,7 +39,7 @@ FEAT_DIM    = STRUCT_DIM + TFIDF_DIM + EMOTION_DIM
 
 #BiGCN: two GCN streams (top-down and bottom-up), root features injected at layer 2
 class RumorGNN(nn.Module):
-    def __init__(self, in_dim=FEAT_DIM, hidden=256, num_classes=4, dropout=0.5):
+    def __init__(self, in_dim=FEAT_DIM, hidden=128, num_classes=4, dropout=0.5):
         super().__init__()
         #top-down conv layers (parent -> child)
         self.top_down_conv1 = GCNConv(in_dim, hidden)
@@ -65,7 +65,9 @@ class RumorGNN(nn.Module):
         #struct+emotion are too few/informative to drop
         tf_in = F.dropout(tf, p=self.dropout, training=self.training)
         x_full = torch.cat([x, tf_in, ef], dim=1)     # (N, STRUCT+TFIDF+EMOTION)
-        rf = torch.cat([root_feat[batch], tf, ef], dim=1)  # (N, STRUCT+TFIDF+EMOTION)
+        # use the dropped tf in root injection too, otherwise the model recovers
+        # the full TF-IDF signal at layer 2 and overfits to source-tweet tokens
+        rf = torch.cat([root_feat[batch], tf_in, ef], dim=1)  # (N, STRUCT+TFIDF+EMOTION)
 
         #top-down stream
         #relu after each conv, dropout after layer 1, inject root features before layer 2
@@ -190,37 +192,28 @@ def evaluate(model, loader, device):
     f1  = f1_score(all_labels, all_preds, average="macro")
     return acc, f1, all_preds, all_labels
 
-#run a full train/val/test cycle for one ablation config, print classification reports
-def run_config(use_text, use_emotion, device):
-    set_seed(255)
+#run a full train/val/test cycle for one (config, seed) pair
+#returns a dict of metrics + final test preds/labels for downstream aggregation
+def run_config(use_text, use_emotion, device, seed=255, verbose=False):
+    set_seed(seed)
     label_names = sorted(LABELS, key=LABELS.get)
-    #build config string for display and cache naming
     config = (("t" if use_text else "") + ("e" if use_emotion else "")) or "struct"
-    print(f"\n{'='*55}")
-    print(f"  CONFIG: {config}")
-    print(f"{'='*55}")
 
-    #load splits for this config
     train_data = load_data_list("train", use_text, use_emotion)
     val_data   = load_data_list("val",   use_text, use_emotion)
     test_data  = load_data_list("test",  use_text, use_emotion)
-    print(f"  train={len(train_data)}, val={len(val_data)}, test={len(test_data)}")
 
     #dataLoader makes graphs into one disjoint mega-graph
     gen = torch.Generator()
-    gen.manual_seed(255)
-<<<<<<< HEAD
-    train_loader = DataLoader(train_data, batch_size=32, shuffle=True, generator = gen)
-=======
+    gen.manual_seed(seed)
     train_loader = DataLoader(train_data, batch_size=32, shuffle=True, generator=gen)
->>>>>>> f8f44d513d5613a55e86d20c1c8c4dd7c4917174
     val_loader   = DataLoader(val_data,   batch_size=64)
     test_loader  = DataLoader(test_data,  batch_size=64)
 
     #init model, optimizer, and scheduler
     model     = RumorGNN().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-3)
-    #if val f1 doesnt improve for 10 epochs, reduce lr by factor of 0.5
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=5e-4)
+    #if val f1 doesnt improve for 15 epochs, reduce lr by factor of 0.5
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", patience=15, factor=0.5)
 
@@ -229,52 +222,50 @@ def run_config(use_text, use_emotion, device):
     best_state      = None
     best_val_preds  = None
     best_val_labels = None
-<<<<<<< HEAD
-=======
     #counter to stop early if no improvment. prevents overfitting and saves time.
->>>>>>> f8f44d513d5613a55e86d20c1c8c4dd7c4917174
     no_improve = 0
-    print("  training...")
+    last_epoch = 0
     for epoch in range(1, 101):
+        last_epoch = epoch
         loss = train_epoch(model, train_loader, optimizer, device)
         val_acc, val_f1, val_preds, val_labels = evaluate(model, val_loader, device)
         scheduler.step(val_f1)
-        if (0 < (val_f1 - best_val_f1) < 0.01):
-            no_improve += 1
-        if val_f1 > best_val_f1:
+
+        if val_f1 > best_val_f1 + 1e-4:
             best_val_f1     = val_f1
             best_state      = {k: v.clone() for k, v in model.state_dict().items()}
             best_val_preds  = val_preds
             best_val_labels = val_labels
             no_improve = 0
-<<<<<<< HEAD
-
-=======
         else:
             no_improve += 1
->>>>>>> f8f44d513d5613a55e86d20c1c8c4dd7c4917174
-        if epoch % 5 == 0:
+
+        if verbose and epoch % 5 == 0:
             print(f"  epoch {epoch:3d} | loss={loss:.4f} | val_acc={val_acc:.3f} | val_f1={val_f1:.3f}")
         if no_improve >= 20:
-            print(f"  early stopping at epoch {epoch}")
+            if verbose:
+                print(f"  early stopping at epoch {epoch}")
             break
 
-        if no_improve > 15:
-            break
-    #restore best checkpoint and print val + test reports
     model.load_state_dict(best_state)
     test_acc, test_f1, test_preds, test_labels = evaluate(model, test_loader, device)
+    per_class_f1 = f1_score(
+        test_labels, test_preds, average=None, labels=list(range(len(label_names)))
+    )
 
-    print(f"\n  *** Best Validation F1: {best_val_f1:.4f} ***")
-    print(classification_report(best_val_labels, best_val_preds, target_names=label_names))
-    print(f"  *** Test  |  acc={test_acc:.3f}  macro_f1={test_f1:.3f} ***")
-    print(classification_report(test_labels, test_preds, target_names=label_names))
-    #confusion matrix shows where each true class actually got predicted
-    cm = confusion_matrix(test_labels, test_preds, labels=list(range(len(label_names))))
-    print("  test confusion matrix (rows=true, cols=pred):")
-    print(f"  {'':12s}" + "".join(f"{n:>11s}" for n in label_names))
-    for name, row in zip(label_names, cm):
-        print(f"  {name:12s}" + "".join(f"{v:>11d}" for v in row))
+    return {
+        "config": config,
+        "seed": seed,
+        "epochs": last_epoch,
+        "best_val_f1": best_val_f1,
+        "test_acc": test_acc,
+        "test_f1": test_f1,
+        "per_class_f1": np.asarray(per_class_f1),
+        "test_preds": test_preds,
+        "test_labels": test_labels,
+        "best_val_preds": best_val_preds,
+        "best_val_labels": best_val_labels,
+    }
 
 
 def set_seed(seed=255):
@@ -284,20 +275,72 @@ def set_seed(seed=255):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    #scatter ops in GCNConv are non-deterministic on GPU; warn_only keeps them
+    #usable while flagging the residual variance.
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
+
+def summarize_config(config, results, label_names):
+    val_f1s   = np.array([r["best_val_f1"] for r in results])
+    test_accs = np.array([r["test_acc"]    for r in results])
+    test_f1s  = np.array([r["test_f1"]     for r in results])
+    per_class = np.stack([r["per_class_f1"] for r in results])  # (n_seeds, n_classes)
+
+    print(f"\n  *** Summary over {len(results)} seeds (CONFIG: {config}) ***")
+    print(f"  val_f1   = {val_f1s.mean():.3f} ± {val_f1s.std(ddof=0):.3f}"
+          f"   (min={val_f1s.min():.3f}, max={val_f1s.max():.3f})")
+    print(f"  test_acc = {test_accs.mean():.3f} ± {test_accs.std(ddof=0):.3f}"
+          f"   (min={test_accs.min():.3f}, max={test_accs.max():.3f})")
+    print(f"  test_f1  = {test_f1s.mean():.3f} ± {test_f1s.std(ddof=0):.3f}"
+          f"   (min={test_f1s.min():.3f}, max={test_f1s.max():.3f})")
+    print(f"  per-class test F1 (mean ± std):")
+    for i, name in enumerate(label_names):
+        col = per_class[:, i]
+        print(f"    {name:12s} {col.mean():.3f} ± {col.std(ddof=0):.3f}"
+              f"   (min={col.min():.3f}, max={col.max():.3f})")
 
 
 def main():
-    set_seed(255)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
 
-    for use_text, use_emotion in [
+    seeds = [255, 42, 7, 1, 100]
+    label_names = sorted(LABELS, key=LABELS.get)
+
+    configs = [
         (False, False),   #struct only
         (True,  False),   #struct + TF-IDF
         (False, True),    #struct + emotion
         (True,  True),    #struct + TF-IDF + emotion
-    ]:
-        run_config(use_text, use_emotion, device)
+    ]
+
+    for use_text, use_emotion in configs:
+        config = (("t" if use_text else "") + ("e" if use_emotion else "")) or "struct"
+        print(f"\n{'='*55}")
+        print(f"  CONFIG: {config}  (seeds={seeds})")
+        print(f"{'='*55}")
+
+        results = []
+        for seed in seeds:
+            r = run_config(use_text, use_emotion, device, seed=seed, verbose=False)
+            results.append(r)
+            print(f"  seed={seed:>4d} | epochs={r['epochs']:>3d}"
+                  f" | val_f1={r['best_val_f1']:.3f}"
+                  f" | test_acc={r['test_acc']:.3f}"
+                  f" | test_f1={r['test_f1']:.3f}")
+
+        summarize_config(config, results, label_names)
+
+        #show the test confusion matrix from the median-test_f1 seed for sanity
+        median_idx = int(np.argsort([r["test_f1"] for r in results])[len(results) // 2])
+        med = results[median_idx]
+        print(f"\n  median-seed test classification report (seed={med['seed']}, test_f1={med['test_f1']:.3f}):")
+        print(classification_report(med["test_labels"], med["test_preds"], target_names=label_names))
+        cm = confusion_matrix(med["test_labels"], med["test_preds"], labels=list(range(len(label_names))))
+        print("  test confusion matrix (rows=true, cols=pred):")
+        print(f"  {'':12s}" + "".join(f"{n:>11s}" for n in label_names))
+        for name, row in zip(label_names, cm):
+            print(f"  {name:12s}" + "".join(f"{v:>11d}" for v in row))
 
 
 if __name__ == "__main__":
