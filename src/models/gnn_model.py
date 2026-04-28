@@ -165,8 +165,8 @@ def load_data_list(split_name, use_text=True, use_emotion=True):
         for row in rows:
             data_list.append(compile_data(
                 row["id"], row["label"], path_dir,
-                text_vec=tfidf[row["id"]] if tfidf else None,
-                emotion_vec=emotion[row["id"]] if emotion else None,
+                text_vec=tfidf.get(str(row["id"])) if tfidf else None,
+                emotion_vec=emotion.get(str(row["id"])) if emotion else None,
             ))
     torch.save(data_list, cache_path)
     return data_list
