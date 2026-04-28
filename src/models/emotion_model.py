@@ -185,10 +185,12 @@ def get_emotion_features():
     features = {}
     for dataset in ["twitter15", "twitter16"]:
         csv_path = ROOT / f"data/rumor_detection_acl2017/{dataset}/emotions.csv"
-        df = pd.read_csv(csv_path)
+        # force id as string: iterrows() promotes a mixed int64/float64 row to
+        # a float64 Series, which mangles 18-digit tweet ids into '6.6e+17'.
+        df = pd.read_csv(csv_path, dtype={"id": str})
         for _, row in df.iterrows():
             vec = torch.tensor([row[k] for k in EKMAN_KEYS], dtype=torch.float32)
-            features[str(row["id"])] = vec
+            features[row["id"]] = vec
 
     torch.save(features, cache_path)
     return features
