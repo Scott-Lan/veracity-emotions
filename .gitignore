@@ -19,3 +19,5 @@ data/raw/
 .vscode/
 .env
 .kaggle/
+
+data/
