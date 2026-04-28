@@ -304,10 +304,7 @@ def main():
   
         r = run_config(use_text, use_emotion, device, seed=seed, verbose=False)
         results.append(r)
-        print(f"  seed={seed:>4d} | epochs={r['epochs']:>3d}"
-                f" | val_f1={r['best_val_f1']:.3f}"
-                f" | test_acc={r['test_acc']:.3f}"
-                f" | test_f1={r['test_f1']:.3f}")
+
 
 
         #show the test confusion matrix from the median-test_f1 seed for sanity
