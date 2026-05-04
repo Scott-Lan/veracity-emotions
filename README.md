@@ -23,6 +23,17 @@ Python version:
 python(3) {PROJECT_ROOT}/src/text_model.py
 ```
 
+## To run GNN model:
+```
+python(3) {PROJECT_ROOT}/src/gnn_model.py
+```
+
+## to run Full Project / Complete Model:
+```
+cd /path/to/veracity-emotions
+chmod +x run.sh
+./run.sh
+```
 
 ## manual download
 ```     
